@@ -24,7 +24,23 @@ void lu_solve_kernel_xpu(
     const Tensor& B,
     TransposeType trans) {
 #if defined(USE_ONEMKL_XPU)
+#if defined(_WIN32)
+  // On Linux, oneMKL's batched getrs catches singular-pivot errors via
+  // oneapi::mkl::lapack::batch_error and error_handle() populates per-element
+  // info codes correctly. On Windows, the same condition instead raises a
+  // Windows fatal exception (access violation) before the SYCL async error
+  // propagation can run, so the batch_error is never thrown. Fall back to
+  // CPU LAPACK unconditionally on Windows where this crash occurs.
+  {
+    const auto LU_cpu = LU.to(LU.options().device(kCPU));
+    const auto pivots_cpu = pivots.to(pivots.options().device(kCPU));
+    auto B_cpu = B.to(B.options().device(kCPU));
+    lu_solve_stub(at::kCPU, LU_cpu, pivots_cpu, B_cpu, trans);
+    B.copy_(B_cpu);
+  }
+#else
   native::xpu::lu_solve_mkl(LU, pivots, B, trans);
+#endif // _WIN32
 #else
   const auto LU_cpu = LU.to(LU.options().device(kCPU));
   const auto pivots_cpu = pivots.to(pivots.options().device(kCPU));
@@ -60,13 +76,23 @@ void lu_factor_kernel_xpu(
     const Tensor& infos,
     bool compute_pivots) {
 #if defined(USE_ONEMKL_XPU)
+#if defined(_WIN32)
+  // On Linux, oneMKL's batched getrf catches zero-pivot errors via
+  // oneapi::mkl::lapack::batch_error and error_handle() populates per-element
+  // info codes correctly. On Windows, the same condition instead raises a
+  // Windows fatal exception (access violation) before the SYCL async error
+  // propagation can run, so the batch_error is never thrown. Fall back to
+  // CPU LAPACK unconditionally on Windows where this crash occurs.
+  lu_factor_kernel_fallback(input, pivots, infos, compute_pivots);
+#else
   int64_t batch_size = native::batchCount(input);
   // TODO: optimize lu_factor performance on XPU when batch_size = 1
   if (batch_size == 1) {
     lu_factor_kernel_fallback(input, pivots, infos, compute_pivots);
-  } else {
-    native::xpu::lu_factor_mkl(input, pivots, infos, compute_pivots);
+    return;
   }
+  native::xpu::lu_factor_mkl(input, pivots, infos, compute_pivots);
+#endif // _WIN32
 #else
   lu_factor_kernel_fallback(input, pivots, infos, compute_pivots);
 #endif // USE_ONEMKL_XPU

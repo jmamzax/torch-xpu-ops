@@ -375,6 +375,31 @@ TORCH_LIBRARY_IMPL(aten, XPU, m) {
         torch::CppFunction::makeFromBoxedFunction<&xpu_fallback_impl>());
   }
 }
+
+#if defined(_WIN32)
+// On Linux, linalg_cond works correctly on XPU. On Windows, oneMKL's batched
+// GETRF/GETRS raises a Windows fatal exception (access violation) instead of
+// a catchable oneapi::mkl::lapack::batch_error when a singular matrix is in
+// the batch. lu_factor_kernel_xpu and lu_solve_kernel_xpu already fall back
+// to CPU for those kernels on Windows, but linalg_cond also calls the XPU
+// norm_kernel on the resulting inverse (which contains infinity values after
+// masking singular entries), and that kernel corrupts XPU device memory on
+// Windows for this input pattern. Falling back the entire linalg_cond
+// operation to CPU avoids both issues on Windows.
+TORCH_LIBRARY_IMPL(aten, XPU, m) {
+  for (auto& op_name : std::vector<std::string>{
+           "linalg_cond",
+           "linalg_cond.out",
+           "linalg_cond.p_str",
+           "linalg_cond.p_str_out",
+       }) {
+    m.impl(
+        op_name.c_str(),
+        torch::CppFunction::makeFromBoxedFunction<&xpu_fallback_impl>());
+  }
+}
+#endif // _WIN32
+
 TORCH_LIBRARY_IMPL(_inductor_test, XPU, m) {
   m.impl(
       "realize",
